@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
+export const runtime = "nodejs"
+
 type TokenResponse = {
   access_token: string
   token_type: string
@@ -25,6 +27,7 @@ function asArray<T>(v: T | T[] | undefined | null): T[] {
 
 function parseMacrosFromDescription(desc: string | undefined) {
   const d = (desc ?? '').toString()
+
   const calories = toNumber(d.match(/Calories:\s*([\d.]+)\s*kcal/i)?.[1], 0)
   const fat = toNumber(d.match(/Fat:\s*([\d.]+)\s*g/i)?.[1], 0)
   const carbs = toNumber(d.match(/Carbs:\s*([\d.]+)\s*g/i)?.[1], 0)
@@ -50,6 +53,7 @@ async function getAccessToken(): Promise<string> {
   body.set('scope', 'basic')
 
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+
   const resp = await fetch('https://oauth.fatsecret.com/connect/token', {
     method: 'POST',
     headers: {
@@ -76,19 +80,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const q = (req.query.query || req.query.q || '').toString().trim()
   if (q.length < 2) {
-    res.status(200).json([])
+    res.status(200).json({ foods: { food: [] } })
     return
   }
 
   try {
     const token = await getAccessToken()
-    const maxResults = 12
 
     const body = new URLSearchParams()
     body.set('method', 'foods.search')
     body.set('search_expression', q)
     body.set('format', 'json')
-    body.set('max_results', String(maxResults))
+    body.set('max_results', '12')
     body.set('page_number', '0')
 
     const resp = await fetch('https://platform.fatsecret.com/rest/server.api', {
@@ -100,13 +103,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body,
     })
 
+    const rawText = await resp.text()
+    console.log("FatSecret RAW RESPONSE:", rawText)
+
     if (!resp.ok) {
-      const text = await resp.text().catch(() => '')
-      res.status(resp.status).json({ error: text || 'FatSecret search failed' })
-      return
+      return res.status(resp.status).json({ error: rawText || 'FatSecret search failed' })
     }
 
-    const data: any = await resp.json()
+    let data: any
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      return res.status(500).json({ error: 'Invalid JSON from FatSecret', raw: rawText })
+    }
+
     const foodsRaw = data?.foods?.food
     const foods = asArray<FatSecretSearchFood>(foodsRaw)
 
@@ -128,9 +138,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter((x) => x.name.length > 0)
 
     res.setHeader('Cache-Control', 'no-store')
-    res.status(200).json(mapped)
+
+    // ⭐ IMPORTANT FIX — return FatSecret-like structure
+    res.status(200).json({
+      foods: {
+        food: mapped
+      }
+    })
+
   } catch (e: any) {
+    console.error("FatSecret ERROR:", e)
     res.status(500).json({ error: e?.message || 'FatSecret proxy error' })
   }
 }
-
