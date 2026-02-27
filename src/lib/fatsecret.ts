@@ -1,3 +1,4 @@
+export const runtime = "nodejs"
 export type FatSecretFood = {
   id: string
   name: string
